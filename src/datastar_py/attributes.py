@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import collections.abc
+import dataclasses
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
@@ -100,9 +102,64 @@ JSEvent = Literal[
 ]
 
 
+@dataclasses.dataclass(frozen=True)
+class JSExpression:
+    """JavaScript expression."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Reject empty or non-string expression source."""
+        _require_nonblank_string("JSExpression.value", self.value)
+
+
 SignalValue: TypeAlias = (
-    str | int | float | bool | dict[str, "SignalValue"] | list["SignalValue"] | None
+    str
+    | int
+    | float
+    | bool
+    | JSExpression
+    | dict[str, "SignalValue"]
+    | list["SignalValue"]
+    | tuple["SignalValue", ...]
+    | None
 )
+
+
+def _require_nonblank_string(name: str, value: object) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    if not value.strip():
+        raise ValueError(f"{name} must be non-empty")
+
+
+def javascript(value: object) -> str:
+    """Serialize data recursively."""
+    if isinstance(value, JSExpression):
+        return f"({value.value})"
+    if isinstance(value, collections.abc.Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("JavaScript object keys must be strings")
+        # TODO: Revisit when `__proto__` should be special cased
+        return (
+            "{"
+            + ", ".join(f"{javascript(key)}: {javascript(item)}" for key, item in value.items())
+            + "}"
+        )
+    if isinstance(value, list | tuple):
+        return "[" + ", ".join(javascript(item) for item in value) + "]"
+    return json.dumps(value, allow_nan=False)
+
+
+def _as_javascript_expressions(value: object) -> object:
+    """Wrap strings in a nested javascript expressions."""
+    if isinstance(value, collections.abc.Mapping):
+        return {key: _as_javascript_expressions(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_as_javascript_expressions(item) for item in value]
+    if isinstance(value, str):
+        return JSExpression(value)
+    return value
 
 
 class AttributeGenerator:
@@ -128,7 +185,7 @@ class AttributeGenerator:
             rather than literals.
         """
         signals = {**(signals_dict or {}), **signals}
-        val = _js_object(signals) if expressions_ else json.dumps(signals)
+        val = javascript(_as_javascript_expressions(signals) if expressions_ else signals)
         return SignalsAttr(value=val, alias=self._alias)
 
     def computed(self, computed_dict: Mapping[str, str] | None = None, /, **computed: str) -> BaseAttr:
@@ -153,7 +210,11 @@ class AttributeGenerator:
     def attr(self, attr_dict: Mapping[str, str] | None = None, /, **attrs: str) -> BaseAttr:
         """Set the value of any HTML attributes to expressions, and keep them in sync."""
         attrs = {**(attr_dict or {}), **attrs}
-        return BaseAttr("attr", value=_js_object(attrs), alias=self._alias)
+        return BaseAttr(
+            "attr",
+            value=javascript(_as_javascript_expressions(attrs)),
+            alias=self._alias,
+        )
 
     def bind(self, signal_name: str) -> BaseAttr:
         """Set up two-way data binding between a signal and an element's value."""
@@ -162,7 +223,11 @@ class AttributeGenerator:
     def class_(self, class_dict: Mapping[str, str] | None = None, /, **classes: str) -> BaseAttr:
         """Add or removes classes to or from an element based on expressions."""
         classes = {**(class_dict or {}), **classes}
-        return BaseAttr("class", value=_js_object(classes), alias=self._alias)
+        return BaseAttr(
+            "class",
+            value=javascript(_as_javascript_expressions(classes)),
+            alias=self._alias,
+        )
 
     def init(self, expression: str) -> InitAttr:
         """Execute an expression when the element is loaded into the DOM."""
@@ -217,7 +282,11 @@ class AttributeGenerator:
     def style(self, style_dict: Mapping[str, str] | None = None, /, **styles: str) -> BaseAttr:
         """Set the value of inline CSS styles on an element based on an expression, and keeps them in sync."""
         styles = {**(style_dict or {}), **styles}
-        return BaseAttr("style", value=_js_object(styles), alias=self._alias)
+        return BaseAttr(
+            "style",
+            value=javascript(_as_javascript_expressions(styles)),
+            alias=self._alias,
+        )
 
     def text(self, expression: str) -> BaseAttr:
         """Bind the text content of an element to an expression."""
@@ -735,20 +804,6 @@ def _filter_dict(include: str | None = None, exclude: str | None = None) -> dict
     if exclude:
         filter_dict["exclude"] = exclude
     return filter_dict
-
-
-JSObjectDict: TypeAlias = Mapping[str, "str | SignalValue | JSObjectDict"]
-
-def _js_object(obj: JSObjectDict) -> str:
-    """Create a JS object where the values are expressions rather than strings."""
-    return (
-        "{"
-        + ", ".join(
-            f"{json.dumps(k)}: {_js_object(v) if isinstance(v, dict) else v}"
-            for k, v in obj.items()
-        )
-        + "}"
-    )
 
 
 attribute_generator = AttributeGenerator()
