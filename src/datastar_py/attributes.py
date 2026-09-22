@@ -728,8 +728,8 @@ def _escape(s: str) -> str:
     )
 
 
-def _filter_dict(include: str | None = None, exclude: str | None = None) -> dict[str, str | None]:
-    filter_dict: dict[str, str| None] = {}
+def _filter_dict(include: str | None = None, exclude: str | None = None) -> dict[str, str]:
+    filter_dict: dict[str, str] = {}
     if include:
         filter_dict["include"] = include
     if exclude:
